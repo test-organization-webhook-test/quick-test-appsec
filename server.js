@@ -59,15 +59,31 @@ app.get("/api/users/:id", (req, res) => {
   });
 });
 
+const MAX_LOGIN_FAILURES = 5;
+const LOGIN_FAILURE_WINDOW_MS = 60000;
+const loginFailures = new Map();
+
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
+  const failureKey = `${username}\u0000${req.ip}`;
+  const now = Date.now();
+  const failures = loginFailures.get(failureKey);
+  if (failures && failures.resetAt > now && failures.count >= MAX_LOGIN_FAILURES) {
+    return res.status(429).json({ error: "Too many attempts" });
+  }
   const hashed = hashPassword(password);
   db.query(
-    "SELECT * FROM users WHERE username = ? AND password = ?",
+    "SELECT id, username FROM users WHERE username = ? AND password = ? LIMIT 1",
     [username, hashed],
     (err, results) => {
       if (err) return res.status(500).json({ error: "Login failed" });
-      if (results.length === 0) return res.status(401).json({ error: "Invalid credentials" });
+      if (results.length === 0) {
+        const current = failures && failures.resetAt > now ? failures : { count: 0, resetAt: now + LOGIN_FAILURE_WINDOW_MS };
+        current.count += 1;
+        loginFailures.set(failureKey, current);
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+      loginFailures.delete(failureKey);
       res.json({ token: "signed-jwt-here", user: results[0] });
     }
   );
